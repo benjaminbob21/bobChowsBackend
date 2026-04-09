@@ -3,6 +3,7 @@ import { Request, Response } from "express";
 import Restaurant, { MenuItemType } from "../models/restaurant";
 import Order from "../models/order";
 import GroupOrder from "../models/groupOrder";
+import User from "../models/user";
 
 const STRIPE = new Stripe(process.env.STRIPE_API_KEY as string);
 const FRONTEND_URL = process.env.FRONTEND_URL as string;
@@ -41,7 +42,6 @@ type CheckoutSessionRequest = {
 };
 
 const handleIndividualOrderPayment = async (orderId: string, session: any) => {
-  console.log("Hola");
   const order = await Order.findById(orderId);
   if (!order) {
     console.error(`Order not found.`);
@@ -60,20 +60,25 @@ const handleGroupOrderPayment = async (groupOrderId: string, userId: string, nam
     return;
   }
 
-  console.log(name)
+  const user = await User.findById(userId);
+  if (!user) {
+    console.error(`User not found: ${userId}`);
+    return;
+  }
 
   if (groupOrder.deliveryDetails) {
     if (groupOrder.deliveryDetails.name != "") {
       groupOrder.deliveryDetails.name += `, ${name}`;
     } else {
       groupOrder.deliveryDetails.name = name;
+
     }
   }
 
   groupOrder.paidParticipants.push({
     email: session.customer_details.email,
     amount: session.amount_total,
-    user: userId
+    user: user._id
   });
 
   if (groupOrder.paidParticipants.length === groupOrder.totalParticipants) {
@@ -163,13 +168,14 @@ const handleGroupCheckout = async (
     checkoutSessionRequest.groupOrderId
   );
 
-  console.log(groupOrder)
   if (!groupOrder) {
     return res.status(404).json({ message: "Group order not found" });
   }
 
   groupOrder.deliveryDetails = checkoutSessionRequest.deliveryDetails;
   groupOrder.deliveryDetails.name = "";
+  groupOrder.initiatorName = checkoutSessionRequest.deliveryDetails.name;
+  groupOrder.restaurantName = restaurant.restaurantName;
 
 
   await groupOrder.save()
@@ -378,7 +384,7 @@ const createGroupOrder = async (req: Request, res: Response) => {
     await newGroupOrder.save();
 
     // Create a shareable link using the group order ID
-    const shareableLink = `${FRONTEND_URL}/join-group/${newGroupOrder._id}`;
+    const shareableLink = `${FRONTEND_URL}/join-order/${newGroupOrder._id}`;
 
     // Return both the group order data and the shareable link
     res.status(201).json({
@@ -409,10 +415,34 @@ const getGroupOrder = async (req: Request, res: Response) => {
   }
 };
 
+const getLinkAndOrder = async (req: Request, res: Response) => { 
+  try {
+    const { groupOrderId } = req.body;
+
+    const groupOrder = await GroupOrder.findById(groupOrderId);
+
+    if (!groupOrder) {
+      return res.status(404).json({ message: "Group order not found" });
+    }
+
+    // Create a shareable link using the group order ID
+    const shareableLink = `${FRONTEND_URL}/join-order/${groupOrder._id}`;
+
+    // Return both the group order data and the shareable link
+    res.status(201).json({
+      groupOrder: groupOrder,
+      shareableLink: shareableLink,
+      id: groupOrder._id,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Something went wrong" });
+  }
+}
+
 const joinGroupOrder = async (req: Request, res: Response) => {
   try {
-    const { groupOrderId } = req.params;
-    const {deliveryDetails, userId } = req.body;
+    const { deliveryDetails, groupOrderId } = req.body;
 
     const groupOrder = await GroupOrder.findById(groupOrderId);
 
@@ -426,6 +456,10 @@ const joinGroupOrder = async (req: Request, res: Response) => {
       return res
         .status(400)
         .json({ message: "You have already joined and paid" });
+    } else if (groupOrder.status == "paid") {
+      return res
+        .status(400)
+        .json({ message: "Group Order is full" });
     }
 
     const session = await createSession(
@@ -444,7 +478,7 @@ const joinGroupOrder = async (req: Request, res: Response) => {
       groupOrder._id.toString(),
       0, // No delivery fee for group participants
       groupOrder.restaurant.toString(),
-      userId,
+      req.userId,
       deliveryDetails.name,
       true, // isGroupOrder
       groupOrderId
@@ -469,4 +503,5 @@ export default {
   createGroupOrder,
   getGroupOrder,
   joinGroupOrder,
+  getLinkAndOrder
 };
