@@ -3,7 +3,6 @@ import { Request, Response } from "express";
 import Restaurant, { MenuItemType } from "../models/restaurant";
 import Order from "../models/order";
 import GroupOrder from "../models/groupOrder";
-import User from "../models/user";
 
 const STRIPE = new Stripe(process.env.STRIPE_API_KEY as string);
 const FRONTEND_URL = process.env.FRONTEND_URL as string;
@@ -53,25 +52,20 @@ const handleIndividualOrderPayment = async (orderId: string, session: any) => {
   await order.save();
 };
 
-const handleGroupOrderPayment = async (groupOrderId: string, userId: string, session: any) => {
+const handleGroupOrderPayment = async (groupOrderId: string, userId: string, name: string, session: any) => {
   const groupOrder = await GroupOrder.findById(groupOrderId);
   if (!groupOrder) {
     console.error(`Group order not found: ${groupOrderId}`);
     return;
   }
 
-  const user = await User.findById(userId);
-  if (user) {
-    if (!groupOrder.deliveryDetails) {
-      groupOrder.deliveryDetails = {
-        name: "",
-      };
-    }
+  console.log(name)
 
-    if (groupOrder.deliveryDetails.name) {
-      groupOrder.deliveryDetails.name += `, ${user.name}`;
+  if (groupOrder.deliveryDetails) {
+    if (groupOrder.deliveryDetails.name != "") {
+      groupOrder.deliveryDetails.name += `, ${name}`;
     } else {
-      groupOrder.deliveryDetails.name = user.name;
+      groupOrder.deliveryDetails.name = name;
     }
   }
 
@@ -117,9 +111,9 @@ const stripeWebhookHandler = async (req: Request, res: Response) => {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     if (session.metadata) {
-      const { groupOrderId, orderId, userId } = session.metadata;
+      const { groupOrderId, orderId, userId, name } = session.metadata;
       if (groupOrderId !== null) {
-        await handleGroupOrderPayment(groupOrderId, userId, session);
+        await handleGroupOrderPayment(groupOrderId, userId, name, session);
       } else if (orderId) {
         await handleIndividualOrderPayment(orderId, session);
       }
@@ -166,13 +160,19 @@ const handleGroupCheckout = async (
   const groupOrder = await GroupOrder.findById(
     checkoutSessionRequest.groupOrderId
   );
+
+  console.log(groupOrder)
   if (!groupOrder) {
     return res.status(404).json({ message: "Group order not found" });
   }
 
-  if (!groupOrder.deliveryDetails) {
-    groupOrder.deliveryDetails = checkoutSessionRequest.deliveryDetails
-  }
+  groupOrder.deliveryDetails = checkoutSessionRequest.deliveryDetails;
+  groupOrder.deliveryDetails.name = "";
+
+
+  await groupOrder.save()
+
+  console.log(groupOrder)
 
   if (
     groupOrder.paidParticipants.some(
@@ -201,6 +201,7 @@ const handleGroupCheckout = async (
     0,
     restaurant._id.toString(),
     req.userId,
+    checkoutSessionRequest.deliveryDetails.name,
     true,
     checkoutSessionRequest.groupOrderId
   );
@@ -251,7 +252,8 @@ const handleIndividualCheckout = async (
     newOrder._id.toString(),
     restaurant.deliveryPrice,
     restaurant._id.toString(),
-    req.userId
+    req.userId,
+    checkoutSessionRequest.deliveryDetails.name
   );
 
   if (!session.url) {
@@ -298,6 +300,7 @@ const createSession = async (
   deliveryPrice: number,
   restaurantId: string,
   userId: string,
+  name: string,
   isGroupOrder: boolean = false,
   groupId: string | null = null
 ) => {
@@ -322,6 +325,7 @@ const createSession = async (
       orderId,
       restaurantId,
       userId,
+      name,
       isGroupOrder: isGroupOrder.toString(),
       groupOrderId: groupId
     },
@@ -334,7 +338,7 @@ const createSession = async (
 
 const createGroupOrder = async (req: Request, res: Response) => {
   try {
-    const { cartItems, deliveryDetails, restaurantId } =
+    const { cartItems, restaurantId } =
       req.body;
 
     const restaurant = await Restaurant.findById(restaurantId);
@@ -359,7 +363,7 @@ const createGroupOrder = async (req: Request, res: Response) => {
       restaurant: restaurant._id,
       initiator: req.userId,
       status: "created",
-      deliveryDetails: deliveryDetails,
+      // deliveryDetails: deliveryDetails,
       cartItems: cartItems,
       totalParticipants: 4,
       paidParticipants: [],
@@ -439,6 +443,7 @@ const joinGroupOrder = async (req: Request, res: Response) => {
       0, // No delivery fee for group participants
       groupOrder.restaurant.toString(),
       userId,
+      deliveryDetails.name,
       true, // isGroupOrder
       groupOrderId
     );
